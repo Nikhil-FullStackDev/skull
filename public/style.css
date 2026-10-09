@@ -133,3 +133,20 @@ h1 { margin: 0; text-align: center; letter-spacing: .35em; font-size: 34px; padd
   .lobbywrap { padding-top: 3vh; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ---------- mobile polish ---------- */
+html { -webkit-text-size-adjust: 100%; }
+body { overflow-x: hidden; }
+img { max-width: 100%; }
+@media (pointer: coarse) {
+  button, .btn, select { min-height: 44px; touch-action: manipulation; }
+  input, .field { font-size: 16px; min-height: 44px; } /* >=16px stops iOS zoom-on-focus */
+}
+@media (pointer: coarse) { .plist button, .bar button { min-height: 40px; padding: 6px 12px; } .stepper button { width: 44px; } }
+@media (max-width: 380px) {
+  :root { --disc: 30px; }
+  .me .mat { width: 100%; --disc: 44px; }
+  .panel { min-width: 0; }
+  .rules { padding: 14px; }
+}
+@media (max-height: 480px) and (orientation: landscape) { .game { padding-top: 4px; gap: 6px; } }
