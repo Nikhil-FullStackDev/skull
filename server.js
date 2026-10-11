@@ -13,6 +13,8 @@ const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || (process.env.RENDER ? '0.0.0.0' : '::');
 const PUBLIC = path.join(__dirname, 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
+const AWAY_MS = Number(process.env.AWAY_MS) || 10e3; // an away player (two misses in a row) gets only this long per decision until they move again
+const TURN_MS = Number(process.env.TURN_MS) || 75e3, MAX_STRIKES = 2; // a human the table waits on this long is auto-played; two misses in a row = a bot plays until they move
 const MIN_PLAYERS = 3, MAX_PLAYERS = 6, MAX_ROOMS = 200, MAX_STREAMS_PER_SEAT = 3;
 const NAMES = ['Ada', 'Bram', 'Cleo', 'Dax', 'Eve', 'Finn'];
 
@@ -60,7 +62,7 @@ function makeCode() {
 const cleanName = n => String(n || '').replace(/[^\w \-']/g, '').trim().slice(0, 14) || 'Player';
 
 function newRoom(hostName) {
-  const room = { code: makeCode(), players: [], state: null, streams: new Map(), touched: Date.now(), botTimer: null, voice: '' };
+  const room = { code: makeCode(), players: [], state: null, streams: new Map(), touched: Date.now(), botTimer: null, voice: '', strikes: new Map(), away: new Set(), idleKey: '', idleSince: Date.now(), lastAct: 0 };
   addPlayer(room, hostName, false);
   rooms.set(room.code, room);
   return room;
@@ -74,6 +76,7 @@ function addPlayer(room, name, bot) {
 function snapshot(room, idx) {
   return {
     code: room.code, you: idx, host: idx === 0, voice: room.voice,
+    idleMsLeft: idleLeft(room, idx),
     lobby: room.players.map((p, i) => ({ name: p.name, bot: p.bot, connected: p.bot || room.streams.has(i), color: Skull.COLORS[i] })),
     game: room.state ? Skull.view(room.state, idx) : null,
   };
@@ -113,10 +116,41 @@ function fallback(s, id) {
   return { type: 'bid', n: s.high + 1 };
 }
 
+// Idle humans: when the table has waited TURN_MS on someone, a bot move is played for them.
+function idleLeft(room, idx) {
+  const s = room.state;
+  if (!s || !Skull.waitingOn(s).includes(idx) || room.players[idx].bot) return null;
+  return Math.max(0, (room.away.has(idx) ? AWAY_MS : TURN_MS) - (Date.now() - Math.max(room.idleSince, room.lastAct)));
+}
+function idleTick(room, now) {
+  const s = room.state;
+  if (!s) return false;
+  const waiting = Skull.waitingOn(s);
+  const key = s.phase + ':' + waiting.join(',');
+  if (key !== room.idleKey) { room.idleKey = key; room.idleSince = now; }
+  const idleFor = now - Math.max(room.idleSince, room.lastAct);
+  const due = waiting.filter(i => !room.players[i].bot && idleFor >= (room.away.has(i) ? AWAY_MS : TURN_MS));
+  if (!due.length) return false;
+  let acted = false;
+  for (const id of due) {
+    const m = botMove(s, id);
+    let r = m && Skull.act(s, id, m);
+    if (!r || r.error) r = Skull.act(s, id, fallback(s, id));
+    if (!r || r.error) continue;
+    acted = true;
+    s.log.push(`${s.players[id].name} ran out of time.`);
+    const n = (room.strikes.get(id) || 0) + 1;
+    room.strikes.set(id, n);
+    if (n >= MAX_STRIKES) room.away.add(id);
+  }
+  room.idleSince = now;
+  return acted;
+}
+
 // Result screens advance on a timer; one cheap interval for all rooms.
 setInterval(() => {
   const now = Date.now();
-  rooms.forEach(room => { if (room.state && Skull.tick(room.state, now)) broadcast(room); });
+  rooms.forEach(room => { if (room.state && (idleTick(room, now) | Skull.tick(room.state, now))) broadcast(room); });
 }, 500).unref();
 
 function json(res, code, obj) {
@@ -178,6 +212,7 @@ async function api(req, res, url) {
     if (!room.state) return json(res, 400, { error: 'Not started' });
     const r = Skull.act(room.state, me, b.move || {});
     if (r.error) return json(res, 400, r);
+    room.lastAct = Date.now(); room.strikes.delete(me); room.away.delete(me);
     broadcast(room);
     return json(res, 200, r);
   }
@@ -191,11 +226,12 @@ async function api(req, res, url) {
     if (room.state || !(i > 0 && i < room.players.length)) return json(res, 400, { error: 'Cannot remove' });
     room.streams.forEach(set => set.forEach(r => r.end())); // clients reconnect with their new index
     room.players.splice(i, 1);
+    room.strikes.clear(); room.away.clear();
     room.streams.clear();
   } else if (url.pathname === '/api/start' || url.pathname === '/api/restart') {
     if (room.players.length < MIN_PLAYERS) return json(res, 400, { error: `Need ${MIN_PLAYERS}+ players` });
     clearTimeout(room.botTimer);
-    room.state = Skull.create(room.players);
+    room.state = Skull.create(room.players); room.strikes.clear(); room.away.clear(); room.idleKey = '';
   } else if (url.pathname === '/api/replace') { // hand a disconnected player over to a bot
     const i = Number(b.index), p = room.players[i];
     if (!p || p.bot || i === 0) return json(res, 400, { error: 'Cannot replace' });
