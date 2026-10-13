@@ -55,7 +55,6 @@ function home() {
   $('code').onkeydown = e => { if (e.key === 'Enter') $('join').click(); };
 }
 
-const voiceBtn = s => (s.voice ? `<a href="${esc(s.voice)}" target="_blank" rel="noopener noreferrer"><button style="width:100%">🎙 Join voice chat</button></a>` : '');
 
 function lobby() {
   const s = snap, n = s.lobby.length;
@@ -63,8 +62,7 @@ function lobby() {
     <div class="code">${s.code}</div>
     <ul class="plist">${s.lobby.map((p, i) => `<li style="--c:${p.color}"><span class="dot"></span><span class="nm">${esc(p.name)}${i === s.you ? ' (you)' : ''}${i === 0 ? ' ★' : ''}</span>
       <span class="dim">${p.connected ? '' : 'offline'}</span>${s.host && i > 0 ? `<button data-kick="${i}">Remove</button>` : ''}</li>`).join('')}</ul>
-    ${voiceBtn(s)}
-    ${s.host ? `<div class="row"><input id="voice" placeholder="Voice chat link (Discord / Meet…)" value="${esc(s.voice)}"><button id="setvoice" style="flex:none">Set</button></div>
+    ${s.host ? `
       <div class="row"><button id="bot" ${n >= 6 ? 'disabled' : ''}>+ Add bot</button>
       <button class="primary" id="start" ${n < 3 ? 'disabled' : ''}>Start game</button></div>
       ${n < 3 ? '<div class="dim" style="text-align:center">Need at least 3 players — add bots to fill seats.</div>' : ''}`
@@ -72,7 +70,6 @@ function lobby() {
     <div class="row"><button id="leave">Leave</button></div></div>${rules()}</div>`;
   $('leave').onclick = () => { leave(); render(); };
   if (s.host) {
-    $('setvoice').onclick = () => send('settings', { voice: $('voice').value });
     $('bot').onclick = () => send('addbot', {});
     $('start').onclick = () => send('start', {});
     document.querySelectorAll('[data-kick]').forEach(b => b.onclick = () => send('kick', { index: +b.dataset.kick }));
@@ -166,7 +163,7 @@ function game() {
   const opps = Array.from({ length: n - 1 }, (_, k) => g.players[(s.you + 1 + k) % n]);
   $app.innerHTML = `<div class="game">
     <div class="bar"><span class="title">SKULL</span><span class="meta">Room ${s.code} · Round ${g.round}</span>
-      ${s.voice ? `<a href="${esc(s.voice)}" target="_blank" rel="noopener noreferrer"><button>🎙 Voice</button></a>` : ''}
+      
       <button id="leave">Leave</button></div>
     <div class="opps">${opps.map(p => matHtml(p, g, s)).join('')}</div>
     ${statusHtml(g, s)}
