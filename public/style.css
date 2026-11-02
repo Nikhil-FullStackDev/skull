@@ -79,7 +79,7 @@ h1 { margin: 0; text-align: center; letter-spacing: .35em; font-size: 34px; padd
 .game { max-width: 1100px; margin: 0 auto; padding: 8px 16px 16px; display: flex; flex-direction: column; gap: 12px; min-height: 100vh; min-height: 100dvh; }
 .bar { display: flex; align-items: center; gap: 8px; }
 .bar .title { font-weight: 800; letter-spacing: .3em; }
-.bar .meta { color: var(--dim); flex: 1; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar .meta { color: var(--dim); flex: 1; font-size: 13.5px; line-height: 1.25; min-width: 0; } /* wraps, so the room code and the 👁 count are never clipped */
 .bar .meta b { color: var(--ink); letter-spacing: .08em; }
 .bar button { padding: 5px 11px; font-size: 13px; }
 .bar .icon { width: 38px; padding: 5px 0; position: relative; font-weight: 700; }

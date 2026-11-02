@@ -71,13 +71,14 @@ function home() {
     <h1>SKULL</h1><div class="tag">The bluffing game · 3–6 players</div>
     <input id="name" placeholder="Your name" maxlength="14" autocomplete="nickname" value="${esc(localStorage.getItem('skull-name') || '')}">
     <button class="primary" id="create">Create room</button>
-    <div class="row"><input id="code" placeholder="Room code" maxlength="4" autocapitalize="characters" autocomplete="off" style="text-transform:uppercase"><button id="join">Join</button></div>
+    <div class="row"><input id="code" placeholder="Room code" maxlength="4" autocapitalize="characters" autocomplete="off" style="text-transform:uppercase"><button id="join">Join</button><button id="watch" title="Watch a game as a spectator: you see the table but cannot play">👁 Watch</button></div>
     <div class="err">${esc(lastErr)}</div>
     </div>${rules()}</div>`;
   const nm = () => { const v = $('name').value.trim(); localStorage.setItem('skull-name', v); return v; };
   const go = p => async () => { try { setSession(await p()); lastErr = ''; } catch (e) { lastErr = e.message; home(); } };
   $('create').onclick = go(() => post('create', { name: nm() }));
   $('join').onclick = go(() => post('join', { name: nm(), code: $('code').value }));
+  $('watch').onclick = go(() => post('join', { name: nm(), code: $('code').value, watch: true }));
   $('code').onkeydown = e => { if (e.key === 'Enter') $('join').click(); };
   $('name').onkeydown = e => { if (e.key === 'Enter') $('create').click(); };
 }
@@ -102,7 +103,7 @@ function lobby() {
       <div class="row"><button id="bot" ${n >= 6 ? 'disabled' : ''}>+ Add bot</button>
       <button class="primary" id="start" ${n < 3 ? 'disabled' : ''}>Start game</button></div>
       ${n < 3 ? '<div class="dim" style="text-align:center">Need at least 3 players — add bots to fill seats.</div>' : ''}`
-      : '<div class="dim" style="text-align:center">Waiting for the host to start…</div>'}
+      : `${Watch.ribbon(snap)}<div class="dim" style="text-align:center">Waiting for the host to start…</div>`}
     <div class="row"><button id="leave">Leave</button></div></div>${rules()}</div>`;
   $('share').onclick = () => shareCode(s.code);
   $('leave').onclick = () => { leave(); render(); };
@@ -240,25 +241,26 @@ function rulesSheet() {
 }
 
 function game() {
-  const s = snap, g = s.game, me = g.players[s.you];
+  const s = snap, g = s.game, me = g.players[s.you], watch = !!s.watch; // a spectator has no seat: `me` is undefined
   if (g.round !== seenRound) { seen = new Set(); seenRound = g.round; }
   const n = g.players.length;
-  const opps = Array.from({ length: n - 1 }, (_, k) => g.players[(s.you + 1 + k) % n]);
-  const myMove = g.waiting.includes(s.you) && !turnDone(g) && me.alive;
+  // Seated players see everyone else, starting with the next seat; a spectator (seat -1) sees every seat in order.
+  const opps = Array.from({ length: watch ? n : n - 1 }, (_, k) => g.players[(s.you + 1 + k) % n]);
+  const myMove = !watch && g.waiting.includes(s.you) && !turnDone(g) && me.alive;
   if (myMove && !wasMyMove && navigator.vibrate) { try { navigator.vibrate(30); } catch (e) { /* not allowed */ } }
   wasMyMove = myMove;
   $app.dataset.screen = 'game';
   $app.innerHTML = `<div class="game ${myMove ? 'mymove' : ''}">
-    <header class="bar"><span class="title">SKULL</span><span class="meta">Round ${g.round} · <b>${s.code}</b></span>
+    <header class="bar"><span class="title">SKULL</span><span class="meta">Round ${g.round} · <b>${s.code}</b> ${Watch.chip(s)}</span>
       <button id="rulesbtn" class="icon" aria-label="How to play" title="How to play">?</button>
       <button id="chatbtn" class="icon" aria-label="Chat" title="Chat">💬<span class="cbadge hidden" id="cbadge"></span></button>
       <button id="leave">Leave</button></header>
     <section class="opps n${opps.length}">${opps.map(p => matHtml(p, g, s)).join('')}</section>
     ${statusHtml(g, s)}
-    <section class="dock" id="dock">${myMove ? '<div class="yourmove">Your move</div>' : ''}${dockHtml(g, s)}</section>
+    <section class="dock" id="dock">${watch ? Watch.ribbon(s) + (g.phase === 'over' ? standingsHtml(g) : '') : (myMove ? '<div class="yourmove">Your move</div>' : '') + dockHtml(g, s)}</section>
   </div>${showRules ? rulesSheet() : ''}`;
 
-  $('leave').onclick = () => { if (confirm('Leave this game?')) { leave(); render(); } };
+  $('leave').onclick = () => { if (watch || confirm('Leave this game?')) { leave(); render(); } };
   $('rulesbtn').onclick = () => { showRules = true; game(); };
   if ($('rules-close')) $('rules-close').onclick = $('rules-scrim').onclick = () => { showRules = false; game(); };
   $('chatbtn').onclick = () => { if (window.Chat && Chat.open) Chat.open(); };

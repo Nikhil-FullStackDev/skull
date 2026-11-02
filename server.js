@@ -83,9 +83,57 @@ function addPlayer(room, name, bot) {
   return p;
 }
 
+// ---------- spectators ----------
+// A late joiner (the room is full, or its game already started) can watch instead: they get the public view of the game
+// (snapshot for seat -1: no hidden hands) and can chat, but cannot play. Their token is not a seat, so every game
+// endpoint refuses it.
+const MAX_WATCHERS = 30;
+const findWatcher = (room, token) => (room && typeof token === 'string' && token && room.watchers ? room.watchers.find(w => w.token === token) : undefined);
+const liveWatchers = room => (room.watchers || []).filter(w => w.streams.size).length;
+function addWatcher(room, name) {
+  const w = { name, token: crypto.randomBytes(12).toString('hex'), streams: new Set(), seen: Date.now() };
+  (room.watchers || (room.watchers = [])).push(w);
+  return w;
+}
+function endWatchers(room) {
+  (room.watchers || []).forEach(w => { w.streams.forEach(r => r.end()); w.streams.clear(); });
+  room.watchers = [];
+}
+const watchFrame = room => `data: ${JSON.stringify({ ...snapshot(room, -1), watch: true })}\n\n`;
+function watchEvents(req, res, room, w) {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.write('retry: 3000\n\n');
+  w.streams.add(res);
+  if (w.streams.size > 3) { const old = w.streams.values().next().value; w.streams.delete(old); old.end(); }
+  w.seen = Date.now();
+  const ping = setInterval(() => res.write(': ping\n\n'), 25000);
+  req.on('close', () => {
+    clearInterval(ping);
+    w.streams.delete(res); w.seen = Date.now();
+    if (rooms.get(room.code) === room) broadcast(room); // the "N watching" count changed
+  });
+  broadcast(room);
+}
+// What a spectator's token may do: stay connected, or leave. Everything else is for seated players.
+function watcherApi(res, room, w, pathname) {
+  if (pathname === '/api/ping') return json(res, 200, { ok: true });
+  if (pathname === '/api/leave') {
+    w.streams.forEach(r => r.end()); w.streams.clear();
+    room.watchers = (room.watchers || []).filter(x => x !== w);
+    broadcast(room);
+    return json(res, 200, { ok: true });
+  }
+  return json(res, 403, { error: 'Spectators can only watch' });
+}
+// Spectators that have been gone for a while are forgotten.
+setInterval(() => {
+  const now = Date.now();
+  rooms.forEach(r => { if (r.watchers && r.watchers.length) r.watchers = r.watchers.filter(w => w.streams.size || now - w.seen < 10 * 60e3); });
+}, 60e3).unref();
+
 function snapshot(room, idx) {
   return {
-    code: room.code, you: idx, host: idx === 0,
+    code: room.code, you: idx, host: idx === 0, watching: liveWatchers(room),
     idleMsLeft: idleLeft(room, idx),
     lobby: room.players.map((p, i) => ({ name: p.name, bot: p.bot, connected: p.bot || presentSeat(room, i), color: Skull.COLORS[i] })),
     game: room.state ? Skull.view(room.state, idx) : null,
@@ -97,6 +145,10 @@ function broadcast(room) {
     const data = `data: ${JSON.stringify(snapshot(room, idx))}\n\n`;
     set.forEach(res => res.write(data));
   });
+  if (room.watchers && room.watchers.length) {
+    const wd = watchFrame(room);
+    room.watchers.forEach(w => w.streams.forEach(res => res.write(wd)));
+  }
   scheduleBots(room);
 }
 
@@ -180,7 +232,11 @@ async function api(req, res, url) {
   if (url.pathname === '/api/events') {
     const room = rooms.get(String(url.searchParams.get('code')).toUpperCase());
     const idx = auth(room, url.searchParams.get('token'));
-    if (idx < 0) return json(res, 404, { error: 'Room not found' });
+    if (idx < 0) {
+      const w = findWatcher(room, url.searchParams.get('token'));
+      if (w) return watchEvents(req, res, room, w);
+      return json(res, 404, { error: 'Room not found' });
+    }
     if (!room.streams.has(idx)) room.streams.set(idx, new Set());
     const set = room.streams.get(idx);
     if (set.size >= MAX_STREAMS_PER_SEAT) [...set][0].end(); // stale tabs
@@ -209,13 +265,20 @@ async function api(req, res, url) {
   if (!room) return json(res, 404, { error: 'Room not found' });
 
   if (url.pathname === '/api/join') {
-    if (room.state) return json(res, 400, { error: 'Game already started' });
-    if (room.players.length >= MAX_PLAYERS) return json(res, 400, { error: 'Room full' });
+    if (b.watch === true) {
+      if ((room.watchers || []).length >= MAX_WATCHERS) return json(res, 400, { error: 'Too many spectators' });
+      const w = addWatcher(room, cleanName(b.name));
+      broadcast(room);
+      return json(res, 200, { code: room.code, token: w.token, watch: true });
+    }
+    if (room.state) return json(res, 400, { error: 'Game already started', watch: true });
+    if (room.players.length >= MAX_PLAYERS) return json(res, 400, { error: 'Room full', watch: true });
     const p = addPlayer(room, cleanName(b.name), false);
     broadcast(room);
     return json(res, 200, { code: room.code, token: p.token });
   }
   const me = auth(room, b.token);
+  if (me < 0) { const w = findWatcher(room, b.token); if (w) return watcherApi(res, room, w, url.pathname); }
   if (me < 0) return json(res, 403, { error: 'Bad token' });
 
   if (url.pathname === '/api/move') {
@@ -258,7 +321,7 @@ async function api(req, res, url) {
 // In-room chat (shared module): its own SSE stream + POST endpoint, independent of the game's connection.
 const chat = require('./chat-server.js')({
   room: code => rooms.get(code),
-  who: (room, token) => { const p = room.players.find(q => q.token && q.token === token); return p ? p.name : null; },
+  who: (room, token) => { const p = room.players.find(q => q.token && q.token === token); if (p) return p.name; const w = findWatcher(room, token); return w ? '👁 ' + w.name : null; },
 });
 
 const server = http.createServer((req, res) => {
@@ -274,7 +337,7 @@ server.keepAliveTimeout = 65000; // outlive Render's proxy keep-alive
 // Reap idle rooms so memory stays flat.
 setInterval(() => {
   const now = Date.now();
-  rooms.forEach((r, c) => { if (!r.streams.size && now - r.touched > 2 * 3600e3) { clearTimeout(r.botTimer); rooms.delete(c); } });
+  rooms.forEach((r, c) => { if (!r.streams.size && now - r.touched > 2 * 3600e3) { clearTimeout(r.botTimer); endWatchers(r); rooms.delete(c); } });
 }, 600e3).unref();
 
 // Render sends SIGTERM on redeploy/restart: stop accepting, drop open streams, exit promptly.
